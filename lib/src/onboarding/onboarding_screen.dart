@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../home/home_screen.dart';
+import '../notifications/notification_service.dart';
 
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key});
@@ -18,6 +19,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   String _selectedGoal = '2000';
   String _unit = 'mL';
   bool _remindersEnabled = true;
+  bool _notificationPermissionInProgress = false;
+  bool _notificationPermissionGranted = false;
   TimeOfDay _wakeTime = const TimeOfDay(hour: 7, minute: 0);
   TimeOfDay _bedTime = const TimeOfDay(hour: 23, minute: 0);
   double _reminderInterval = 2;
@@ -35,7 +38,30 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     super.dispose();
   }
 
+  Future<bool> _requestNotificationPermission() async {
+    if (_notificationPermissionInProgress) return false;
+    setState(() => _notificationPermissionInProgress = true);
+    final granted = await NotificationService.instance.requestPermission();
+    if (!mounted) return granted;
+    setState(() {
+      _notificationPermissionInProgress = false;
+      _notificationPermissionGranted = granted;
+      if (!granted) _remindersEnabled = false;
+    });
+    if (!granted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Notifications are off. You can enable them later in device settings.',
+          ),
+        ),
+      );
+    }
+    return granted;
+  }
+
   Future<void> _goToNextPage() async {
+    if (_notificationPermissionInProgress) return;
     if (_currentPage == 1 && _selectedGoal == 'Custom') {
       final customGoal = int.tryParse(_customGoalController.text.trim());
       if (customGoal == null || customGoal <= 0) {
@@ -47,6 +73,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
 
     if (_currentPage < 3) {
+      if (_currentPage == 2 &&
+          _remindersEnabled &&
+          !_notificationPermissionGranted) {
+        await _requestNotificationPermission();
+      }
       final nextPage = _currentPage + 1;
       _pageController.animateToPage(
         nextPage,
@@ -375,9 +406,75 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             Switch(
               value: _remindersEnabled,
               activeColor: _skyBlueDark,
-              onChanged: (value) => setState(() => _remindersEnabled = value),
+              onChanged: (value) async {
+                if (!value) {
+                  setState(() => _remindersEnabled = false);
+                  return;
+                }
+                setState(() => _remindersEnabled = true);
+                await _requestNotificationPermission();
+              },
             ),
           ],
+        ),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: _skyBlue.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFD2EDF7)),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                _notificationPermissionGranted
+                    ? Icons.notifications_active_outlined
+                    : Icons.notifications_none_outlined,
+                color: _skyBlueDark,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _notificationPermissionGranted
+                          ? 'Notifications are enabled'
+                          : 'Allow notification permission',
+                      style: const TextStyle(
+                        color: _ink,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Hydro needs permission to remind you while the app is closed.',
+                      style: TextStyle(color: _muted, height: 1.35),
+                    ),
+                    if (!_notificationPermissionGranted) ...[
+                      const SizedBox(height: 8),
+                      TextButton(
+                        onPressed: _notificationPermissionInProgress
+                            ? null
+                            : _requestNotificationPermission,
+                        style: TextButton.styleFrom(
+                          padding: EdgeInsets.zero,
+                          alignment: Alignment.centerLeft,
+                        ),
+                        child: Text(
+                          _notificationPermissionInProgress
+                              ? 'Requesting permission...'
+                              : 'Allow notifications',
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
         const SizedBox(height: 12),
         _buildTimeField(

@@ -81,6 +81,11 @@ class _HomeScreenState extends State<HomeScreen> {
   static const String _reduceAnimationsKey = 'reduce_animations';
   static const String _confirmLargeEntriesKey = 'confirm_large_entries';
   static const String _loggingFeedbackKey = 'logging_feedback';
+  static const int _fallbackDailyGoal = 2000;
+
+  static int _normalizeDailyGoal(int value) =>
+      value > 0 ? value : _fallbackDailyGoal;
+
   List<WaterEntry> _entries = [];
   int _selectedTab = 0;
   bool _isLoading = true;
@@ -97,7 +102,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _stopAfterGoal = true;
   bool _soundEnabled = true;
   bool _vibrationEnabled = true;
-  late int _dailyGoal = widget.dailyGoal;
+  late int _dailyGoal = _normalizeDailyGoal(widget.dailyGoal);
   late String _unit = widget.unit;
   int _defaultDrink = 250;
   bool _mascotAnimations = true;
@@ -108,13 +113,15 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isCustomAmountEditorOpen = false;
   final TextEditingController _customAmountController = TextEditingController();
 
-  double get _progress => (_consumed / _dailyGoal).clamp(0, 1).toDouble();
+  int get _effectiveGoal => _normalizeDailyGoal(_dailyGoal);
+
+  double get _progress => (_consumed / _effectiveGoal).clamp(0, 1).toDouble();
   int get _consumed => _entries
       .where((entry) => _isSameDate(entry.timestamp, DateTime.now()))
       .fold(0, (total, entry) => total + entry.amountMl);
-  int get _remaining => (_dailyGoal - _consumed).clamp(0, _dailyGoal);
-  int get _percentage => (_consumed / _dailyGoal * 100).round();
-  int get _extraIntake => (_consumed - _dailyGoal).clamp(0, _consumed);
+  int get _remaining => (_effectiveGoal - _consumed).clamp(0, _effectiveGoal);
+  int get _percentage => (_consumed / _effectiveGoal * 100).round();
+  int get _extraIntake => (_consumed - _effectiveGoal).clamp(0, _consumed);
   Duration get _uiAnimationDuration =>
       _reduceAnimations ? Duration.zero : const Duration(milliseconds: 220);
   Duration get _mascotAnimationDuration =>
@@ -177,7 +184,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final preferences = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() {
-      _dailyGoal = preferences.getInt(_goalKey) ?? widget.dailyGoal;
+      _dailyGoal = _normalizeDailyGoal(
+        preferences.getInt(_goalKey) ?? widget.dailyGoal,
+      );
       _unit = preferences.getString(_unitKey) ?? widget.unit;
       _defaultDrink = preferences.getInt(_defaultDrinkKey) ?? 250;
       _remindersEnabled =
@@ -573,152 +582,155 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildHome() {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final isSmallScreen =
-            constraints.maxHeight < 700 || constraints.maxWidth < 340;
-        final content = Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    _greeting(),
-                    style: const TextStyle(
-                      color: _ink,
-                      fontSize: 22,
-                      fontWeight: FontWeight.w800,
+    return SafeArea(
+      top: true,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isSmallScreen =
+              constraints.maxHeight < 700 || constraints.maxWidth < 340;
+          final content = Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _greeting(),
+                      style: const TextStyle(
+                        color: _ink,
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
-                  ),
-                  Text(
-                    _today(),
-                    style: const TextStyle(color: _muted, fontSize: 13),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 18),
-            AnimatedContainer(
-              duration: _uiAnimationDuration,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: _progress >= 1
-                      ? const [Color(0xFFE9FAF3), Color(0xFFF7FCFF)]
-                      : const [Color(0xFFE5F6FF), Color(0xFFF8FCFF)],
+                    Text(
+                      _today(),
+                      style: const TextStyle(color: _muted, fontSize: 13),
+                    ),
+                  ],
                 ),
-                borderRadius: BorderRadius.circular(28),
-                border: Border.all(
-                  color: _progress >= 1
-                      ? const Color(0xFFC9EEDC)
-                      : const Color(0xFFD4ECF8),
-                ),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x120F7BE6),
-                    blurRadius: 20,
-                    offset: Offset(0, 8),
-                  ),
-                ],
               ),
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final isVeryNarrow = constraints.maxWidth < 300;
-                  final columnWidth = (constraints.maxWidth - 8) / 2;
-                  final ringSize =
-                      (columnWidth - 8).clamp(0.0, 210.0).toDouble();
-                  final mascotSize =
-                      (columnWidth - 8).clamp(0.0, 170.0).toDouble();
-                  final progress = _buildProgressRing(ringSize);
+              const SizedBox(height: 18),
+              AnimatedContainer(
+                duration: _uiAnimationDuration,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: _progress >= 1
+                        ? const [Color(0xFFE9FAF3), Color(0xFFF7FCFF)]
+                        : const [Color(0xFFE5F6FF), Color(0xFFF8FCFF)],
+                  ),
+                  borderRadius: BorderRadius.circular(28),
+                  border: Border.all(
+                    color: _progress >= 1
+                        ? const Color(0xFFC9EEDC)
+                        : const Color(0xFFD4ECF8),
+                  ),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x120F7BE6),
+                      blurRadius: 20,
+                      offset: Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isVeryNarrow = constraints.maxWidth < 300;
+                    final columnWidth = (constraints.maxWidth - 8) / 2;
+                    final ringSize =
+                        (columnWidth - 8).clamp(0.0, 210.0).toDouble();
+                    final mascotSize =
+                        (columnWidth - 8).clamp(0.0, 170.0).toDouble();
+                    final progress = _buildProgressRing(ringSize);
 
-                  if (isVeryNarrow) {
-                    return Column(
-                      children: [
-                        AnimatedSwitcher(
-                          duration: _mascotAnimationDuration,
-                          child: Image.asset(
-                            _mascotAsset(),
-                            key: ValueKey(_mascotAsset()),
-                            height: mascotSize,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        progress,
-                      ],
-                    );
-                  }
-
-                  return Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Expanded(
-                        child: Center(
-                          child: AnimatedSwitcher(
+                    if (isVeryNarrow) {
+                      return Column(
+                        children: [
+                          AnimatedSwitcher(
                             duration: _mascotAnimationDuration,
                             child: Image.asset(
                               _mascotAsset(),
                               key: ValueKey(_mascotAsset()),
-                              width: mascotSize,
                               height: mascotSize,
-                              fit: BoxFit.contain,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          progress,
+                        ],
+                      );
+                    }
+
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Expanded(
+                          child: Center(
+                            child: AnimatedSwitcher(
+                              duration: _mascotAnimationDuration,
+                              child: Image.asset(
+                                _mascotAsset(),
+                                key: ValueKey(_mascotAsset()),
+                                width: mascotSize,
+                                height: mascotSize,
+                                fit: BoxFit.contain,
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(child: Center(child: progress)),
-                    ],
-                  );
-                },
+                        const SizedBox(width: 8),
+                        Expanded(child: Center(child: progress)),
+                      ],
+                    );
+                  },
+                ),
               ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              _message(),
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                  color: _ink, fontSize: 20, fontWeight: FontWeight.w800),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              _progress >= 1
-                  ? _extraIntake > 0
-                      ? 'Goal completed · ${_displayAmount(_extraIntake)} above target'
-                      : 'Daily goal completed'
-                  : '${_displayAmount(_remaining)} remaining',
-              style:
-                  const TextStyle(color: _muted, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 22),
-            _buildQuickAdd(),
-            const SizedBox(height: 16),
-            _buildSummary(),
-            const SizedBox(height: 12),
-            _buildReminder(),
-            if (_consumed >= _dailyGoal) ...[
+              const SizedBox(height: 10),
+              Text(
+                _message(),
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    color: _ink, fontSize: 20, fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                _progress >= 1
+                    ? _extraIntake > 0
+                        ? 'Goal completed · ${_displayAmount(_extraIntake)} above target'
+                        : 'Daily goal completed'
+                    : '${_displayAmount(_remaining)} remaining',
+                style:
+                    const TextStyle(color: _muted, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 22),
+              _buildQuickAdd(),
+              const SizedBox(height: 16),
+              _buildSummary(),
               const SizedBox(height: 12),
-              _buildStreak(),
+              _buildReminder(),
+              if (_consumed >= _dailyGoal) ...[
+                const SizedBox(height: 12),
+                _buildStreak(),
+              ],
             ],
-          ],
-        );
+          );
 
-        if (isSmallScreen) {
-          return SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(22, 28, 22, 24),
+          if (isSmallScreen) {
+            return SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(22, 28, 22, 24),
+              child: content,
+            );
+          }
+
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(22, 20, 22, 16),
             child: content,
           );
-        }
-
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(22, 20, 22, 16),
-          child: content,
-        );
-      },
+        },
+      ),
     );
   }
 
@@ -958,7 +970,10 @@ class _HomeScreenState extends State<HomeScreen> {
                             color: _ink, fontWeight: FontWeight.w700)),
           ),
           if (!_remindersEnabled)
-            TextButton(onPressed: () {}, child: const Text('Enable')),
+            TextButton(
+              onPressed: _enableReminders,
+              child: const Text('Enable'),
+            ),
         ],
       ),
     );
@@ -1866,7 +1881,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _settingsSection('ABOUT', [
           _settingsRow(
               'About Hydro', '', Icons.water_drop_outlined, _showAbout),
-          _settingsInfo('Version 1.0.0'),
+          _settingsInfo('Version 1.0.1'),
         ]),
       ],
     );
@@ -2074,6 +2089,13 @@ class _HomeScreenState extends State<HomeScreen> {
     await _saveEntries();
   }
 
+  Future<void> _enableReminders() async {
+    if (_remindersEnabled) return;
+    setState(() => _remindersEnabled = true);
+    await _savePreference(_remindersEnabledKey, true);
+    await _syncNotifications(requestPermission: true);
+  }
+
   Future<void> _confirmResetData() async {
     final confirmed = await _confirmDestructive(
       'Reset app data?',
@@ -2147,7 +2169,7 @@ class _HomeScreenState extends State<HomeScreen> {
     showLicensePage(
       context: context,
       applicationName: 'Hydro',
-      applicationVersion: '1.0.0',
+      applicationVersion: '1.0.1',
       applicationIcon: Image.asset('assets/images/hydro_icon.png', width: 48),
       applicationLegalese:
           'Hydro is built using Flutter and open-source packages.',
@@ -2159,7 +2181,7 @@ class _HomeScreenState extends State<HomeScreen> {
       scheme: 'mailto',
       path: 'pagatpatan.christianjoseph@gmail.com',
       queryParameters: const {
-        'subject': 'Hydro Feedback (v1.0.0)',
+        'subject': 'Hydro Feedback (v1.0.1)',
         'body': 'Describe the issue or suggestion:',
       },
     );

@@ -50,6 +50,10 @@ class NotificationService {
   }) async {
     await initialize();
     await _plugin.cancelAll();
+    await _configureNotificationChannel(
+      sound: sound,
+      vibration: vibration,
+    );
     if (!enabled || (stopAfterGoal && goalReachedToday)) return;
 
     final details = NotificationDetails(
@@ -116,6 +120,10 @@ class NotificationService {
     required bool vibration,
   }) async {
     await initialize();
+    await _configureNotificationChannel(
+      sound: sound,
+      vibration: vibration,
+    );
     await _plugin.zonedSchedule(
       _snoozeId,
       'Hydro reminder',
@@ -137,6 +145,29 @@ class NotificationService {
       uiLocalNotificationDateInterpretation:
           UILocalNotificationDateInterpretation.absoluteTime,
       androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+    );
+  }
+
+  Future<void> _configureNotificationChannel({
+    required bool sound,
+    required bool vibration,
+  }) async {
+    final android = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    if (android == null) return;
+
+    // Android keeps channel sound and vibration settings after creation.
+    // Recreate the channel so the in-app settings apply to future reminders.
+    await android.deleteNotificationChannel(_channelId);
+    await android.createNotificationChannel(
+      AndroidNotificationChannel(
+        _channelId,
+        'Hydration reminders',
+        description: 'Gentle reminders to log water during active hours.',
+        importance: Importance.defaultImportance,
+        playSound: sound,
+        enableVibration: vibration,
+      ),
     );
   }
 }
