@@ -6,20 +6,35 @@ class NotificationService {
   NotificationService._();
 
   static final NotificationService instance = NotificationService._();
-  static const _channelId = 'hydration_reminders';
+  static const _notificationSound =
+      RawResourceAndroidNotificationSound('drink_water');
   static const _firstReminderId = 1000;
-  static const _snoozeId = 9000;
+  static const _goalReachedId = 2000;
 
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
   bool _initialized = false;
+  void Function()? _onNotificationTap;
+
+  void setNotificationTapHandler(void Function() handler) {
+    _onNotificationTap = handler;
+  }
 
   Future<void> initialize() async {
     if (_initialized) return;
     tz.initializeTimeZones();
     const android = AndroidInitializationSettings('@mipmap/ic_launcher');
     const settings = InitializationSettings(android: android);
-    await _plugin.initialize(settings);
+    await _plugin.initialize(
+      settings,
+      onDidReceiveNotificationResponse: (response) async {
+        final id = response.id;
+        if (id != null) {
+          await _plugin.cancel(id);
+        }
+        _onNotificationTap?.call();
+      },
+    );
     _initialized = true;
   }
 
@@ -27,7 +42,14 @@ class NotificationService {
     await initialize();
     final android = _plugin.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
-    return await android?.requestNotificationsPermission() ?? true;
+    return await android?.requestNotificationsPermission() ?? false;
+  }
+
+  Future<bool> areNotificationsEnabled() async {
+    await initialize();
+    final android = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    return await android?.areNotificationsEnabled() ?? true;
   }
 
   Future<void> cancelAll() async {
@@ -50,22 +72,25 @@ class NotificationService {
   }) async {
     await initialize();
     await _plugin.cancelAll();
-    await _configureNotificationChannel(
+    final channelId = await _configureNotificationChannel(
       sound: sound,
       vibration: vibration,
     );
-    if (!enabled || (stopAfterGoal && goalReachedToday)) return;
+    if (!enabled) return;
 
     final details = NotificationDetails(
       android: AndroidNotificationDetails(
-        _channelId,
+        channelId,
         'Hydration reminders',
         channelDescription:
             'Gentle reminders to log water during active hours.',
         importance: Importance.defaultImportance,
         priority: Priority.defaultPriority,
         playSound: sound,
+        sound: sound ? _notificationSound : null,
         enableVibration: vibration,
+        ongoing: true,
+        autoCancel: false,
         icon: '@mipmap/ic_launcher',
       ),
     );
@@ -93,14 +118,22 @@ class NotificationService {
         continue;
       }
 
+      var reminderIndex = 0;
       while (
           reminder.isBefore(end) && notificationId < _firstReminderId + 250) {
-        if (reminder.isAfter(now)) {
+        final isFirst = reminderIndex == 0;
+        if (reminder.isAfter(now) && !(stopAfterGoal && goalReachedToday)) {
           final scheduled = tz.TZDateTime.from(reminder, tz.local);
+          final copy = _reminderCopy(
+            time: reminder,
+            isFirst: isFirst,
+            goalReachedToday: goalReachedToday,
+            stopAfterGoal: stopAfterGoal,
+          );
           await _plugin.zonedSchedule(
             notificationId++,
-            'Time for a sip',
-            'Take a moment to drink some water.',
+            copy.$1,
+            copy.$2,
             scheduled,
             details,
             uiLocalNotificationDateInterpretation:
@@ -108,6 +141,7 @@ class NotificationService {
             androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
           );
         }
+        reminderIndex++;
         reminder = reminder.add(
           Duration(minutes: (intervalHours * 60).round()),
         );
@@ -115,59 +149,91 @@ class NotificationService {
     }
   }
 
-  Future<void> scheduleSnooze({
+  Future<void> showGoalReachedNotification({
+    required bool enabled,
     required bool sound,
     required bool vibration,
   }) async {
     await initialize();
-    await _configureNotificationChannel(
+    if (!enabled || !await areNotificationsEnabled()) return;
+
+    final channelId = await _configureNotificationChannel(
       sound: sound,
       vibration: vibration,
     );
-    await _plugin.zonedSchedule(
-      _snoozeId,
-      'Hydro reminder',
-      'Your snoozed hydration reminder is ready.',
-      tz.TZDateTime.now(tz.local).add(const Duration(minutes: 30)),
+    await _plugin.show(
+      _goalReachedId,
+      'Daily goal reached',
+      'Congratulations! You reached your hydration goal today.',
       NotificationDetails(
         android: AndroidNotificationDetails(
-          _channelId,
-          'Hydration reminders',
-          channelDescription:
-              'Gentle reminders to log water during active hours.',
+          channelId,
+          'Hydration milestones',
+          channelDescription: 'Notifications for reaching hydration goals.',
           importance: Importance.defaultImportance,
           priority: Priority.defaultPriority,
           playSound: sound,
+          sound: sound ? _notificationSound : null,
           enableVibration: vibration,
+          autoCancel: true,
           icon: '@mipmap/ic_launcher',
         ),
       ),
-      uiLocalNotificationDateInterpretation:
-          UILocalNotificationDateInterpretation.absoluteTime,
-      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
     );
   }
 
-  Future<void> _configureNotificationChannel({
+  (String, String) _reminderCopy({
+    required DateTime time,
+    required bool isFirst,
+    required bool goalReachedToday,
+    required bool stopAfterGoal,
+  }) {
+    if (goalReachedToday && !stopAfterGoal) {
+      return (
+        'Daily goal reached',
+        'You have reached your goal. Be cautious about drinking too much water.',
+      );
+    }
+
+    if (isFirst) {
+      final greeting = time.hour < 12
+          ? 'Good morning'
+          : time.hour < 18
+              ? 'Good afternoon'
+              : 'Good evening';
+      return (
+        '$greeting, it is time to hydrate',
+        'Start your day with your first sip of water.',
+      );
+    }
+
+    return (
+      'You still need to hydrate',
+      'Take a moment to drink some water before the next reminder.',
+    );
+  }
+
+  Future<String> _configureNotificationChannel({
     required bool sound,
     required bool vibration,
   }) async {
+    final channelId =
+        'hydration_reminders_v2_${sound ? 'sound' : 'silent'}_${vibration ? 'vibrate' : 'quiet'}';
     final android = _plugin.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
-    if (android == null) return;
+    if (android == null) return channelId;
 
-    // Android keeps channel sound and vibration settings after creation.
-    // Recreate the channel so the in-app settings apply to future reminders.
-    await android.deleteNotificationChannel(_channelId);
     await android.createNotificationChannel(
       AndroidNotificationChannel(
-        _channelId,
+        channelId,
         'Hydration reminders',
         description: 'Gentle reminders to log water during active hours.',
         importance: Importance.defaultImportance,
         playSound: sound,
+        sound: sound ? _notificationSound : null,
         enableVibration: vibration,
       ),
     );
+    return channelId;
   }
 }

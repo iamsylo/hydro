@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'home/home_screen.dart';
 import 'onboarding/onboarding_screen.dart';
+import 'notifications/notification_service.dart';
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
@@ -15,6 +16,9 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    NotificationService.instance.setNotificationTapHandler(
+      () => homeTabNotifier.value = 0,
+    );
     return MaterialApp(
       title: 'Hydro',
       debugShowCheckedModeBanner: false,
@@ -159,7 +163,19 @@ class _LaunchScreen extends StatefulWidget {
 }
 
 class _LaunchScreenState extends State<_LaunchScreen> {
-  late final Future<Widget> _launchPage = _getLaunchPage();
+  late final Future<Widget> _launchPage = _loadLaunchPage();
+
+  Future<Widget> _loadLaunchPage() async {
+    final startedAt = DateTime.now();
+    final page = await _getLaunchPage();
+    final elapsed = DateTime.now().difference(startedAt);
+    const minimumSplashDuration = Duration(milliseconds: 900);
+    final remaining = minimumSplashDuration - elapsed;
+    if (remaining > Duration.zero) {
+      await Future<void>.delayed(remaining);
+    }
+    return page;
+  }
 
   Future<Widget> _getLaunchPage() async {
     final preferences = await SharedPreferences.getInstance();
@@ -196,7 +212,14 @@ class _LaunchScreenState extends State<_LaunchScreen> {
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
           return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
+            backgroundColor: Color(0xFFF0FAFF),
+            body: Center(
+              child: Image(
+                image: AssetImage('assets/images/loading.png'),
+                width: 260,
+                fit: BoxFit.contain,
+              ),
+            ),
           );
         }
         return snapshot.data!;

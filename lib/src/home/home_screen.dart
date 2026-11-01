@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -6,8 +7,9 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../onboarding/onboarding_screen.dart';
 import '../notifications/notification_service.dart';
+
+final ValueNotifier<int> homeTabNotifier = ValueNotifier<int>(0);
 
 class WaterEntry {
   const WaterEntry({
@@ -76,11 +78,9 @@ class _HomeScreenState extends State<HomeScreen> {
   static const String _stopAfterGoalKey = 'stop_after_goal';
   static const String _soundKey = 'reminder_sound';
   static const String _vibrationKey = 'reminder_vibration';
-  static const String _themeKey = 'theme_mode';
-  static const String _mascotAnimationsKey = 'mascot_animations';
-  static const String _reduceAnimationsKey = 'reduce_animations';
   static const String _confirmLargeEntriesKey = 'confirm_large_entries';
   static const String _loggingFeedbackKey = 'logging_feedback';
+  static const String _darkModeKey = 'dark_mode';
   static const int _fallbackDailyGoal = 2000;
 
   static int _normalizeDailyGoal(int value) =>
@@ -105,13 +105,12 @@ class _HomeScreenState extends State<HomeScreen> {
   late int _dailyGoal = _normalizeDailyGoal(widget.dailyGoal);
   late String _unit = widget.unit;
   int _defaultDrink = 250;
-  bool _mascotAnimations = true;
-  bool _reduceAnimations = false;
   bool _confirmLargeEntries = true;
   bool _loggingFeedback = true;
-  ThemeMode _themeMode = ThemeMode.system;
+  bool _darkMode = false;
   bool _isCustomAmountEditorOpen = false;
   final TextEditingController _customAmountController = TextEditingController();
+  Timer? _reminderCountdownTimer;
 
   int get _effectiveGoal => _normalizeDailyGoal(_dailyGoal);
 
@@ -122,20 +121,32 @@ class _HomeScreenState extends State<HomeScreen> {
   int get _remaining => (_effectiveGoal - _consumed).clamp(0, _effectiveGoal);
   int get _percentage => (_consumed / _effectiveGoal * 100).round();
   int get _extraIntake => (_consumed - _effectiveGoal).clamp(0, _consumed);
-  Duration get _uiAnimationDuration =>
-      _reduceAnimations ? Duration.zero : const Duration(milliseconds: 220);
-  Duration get _mascotAnimationDuration =>
-      _mascotAnimations ? _uiAnimationDuration : Duration.zero;
+  Duration get _uiAnimationDuration => const Duration(milliseconds: 220);
+  Duration get _mascotAnimationDuration => _uiAnimationDuration;
 
   @override
   void initState() {
     super.initState();
+    homeTabNotifier.addListener(_selectHomeTab);
+    _reminderCountdownTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) {
+        if (mounted) setState(() {});
+      },
+    );
     _loadEntries();
     _loadPreferences();
   }
 
+  void _selectHomeTab() {
+    if (!mounted || _selectedTab == homeTabNotifier.value) return;
+    setState(() => _selectedTab = homeTabNotifier.value);
+  }
+
   @override
   void dispose() {
+    _reminderCountdownTimer?.cancel();
+    homeTabNotifier.removeListener(_selectHomeTab);
     _customAmountController.dispose();
     super.dispose();
   }
@@ -201,15 +212,11 @@ class _HomeScreenState extends State<HomeScreen> {
       _soundEnabled = preferences.getBool(_soundKey) ?? _soundEnabled;
       _vibrationEnabled =
           preferences.getBool(_vibrationKey) ?? _vibrationEnabled;
-      _themeMode = _readTheme(preferences.getString(_themeKey));
-      _mascotAnimations =
-          preferences.getBool(_mascotAnimationsKey) ?? _mascotAnimations;
-      _reduceAnimations =
-          preferences.getBool(_reduceAnimationsKey) ?? _reduceAnimations;
       _confirmLargeEntries =
           preferences.getBool(_confirmLargeEntriesKey) ?? _confirmLargeEntries;
       _loggingFeedback =
           preferences.getBool(_loggingFeedbackKey) ?? _loggingFeedback;
+      _darkMode = preferences.getBool(_darkModeKey) ?? _darkMode;
       _preferencesLoaded = true;
     });
     await _maybeSyncNotifications();
@@ -217,7 +224,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _maybeSyncNotifications() async {
     if (!_entriesLoaded || !_preferencesLoaded) return;
-    await _syncNotifications();
+    await _syncNotifications(requestPermission: _remindersEnabled);
   }
 
   Future<void> _syncNotifications({bool requestPermission = false}) async {
@@ -227,16 +234,26 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     _notificationSyncInProgress = true;
     try {
-      if (requestPermission && _remindersEnabled) {
-        final granted = await NotificationService.instance.requestPermission();
-        if (!granted && mounted) {
+      var notificationsAllowed =
+          await NotificationService.instance.areNotificationsEnabled();
+      if (requestPermission && _remindersEnabled && !notificationsAllowed) {
+        await NotificationService.instance.requestPermission();
+        notificationsAllowed =
+            await NotificationService.instance.areNotificationsEnabled();
+      }
+
+      if (_remindersEnabled && !notificationsAllowed) {
+        await NotificationService.instance.cancelAll();
+        if (requestPermission && mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text(
-                  'Notification permission is disabled in system settings.'),
+                'Notifications are disabled. Enable them in system settings to receive reminders.',
+              ),
             ),
           );
         }
+        return;
       }
 
       await NotificationService.instance.scheduleReminders(
@@ -277,13 +294,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final minute = int.tryParse(parts[1]);
     if (hour == null || minute == null) return fallback;
     return TimeOfDay(hour: hour, minute: minute);
-  }
-
-  ThemeMode _readTheme(String? value) {
-    return ThemeMode.values.firstWhere(
-      (mode) => mode.name == value,
-      orElse: () => ThemeMode.system,
-    );
   }
 
   String _timeValue(TimeOfDay time) =>
@@ -344,10 +354,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   String _mascotAsset() {
     final hour = TimeOfDay.now().hour;
-    if (hour >= 21 && _progress < 0.5) return 'assets/images/sleepy.png';
     if (_progress >= 1) return 'assets/images/goal.png';
     if (_progress >= 0.75) return 'assets/images/waving.png';
     if (_progress > 0.25) return 'assets/images/normal.png';
+    if (_consumed > 0) return 'assets/images/normal.png';
+    if (hour >= 21) return 'assets/images/sleepy.png';
     return 'assets/images/thirsty.png';
   }
 
@@ -388,6 +399,13 @@ class _HomeScreenState extends State<HomeScreen> {
     await _saveEntries();
     if (wasGoalReached != (_progress >= 1)) {
       await _syncNotifications();
+      if (!wasGoalReached && _progress >= 1) {
+        await NotificationService.instance.showGoalReachedNotification(
+          enabled: _remindersEnabled,
+          sound: _soundEnabled,
+          vibration: _vibrationEnabled,
+        );
+      }
     }
     if (!mounted) return;
     if (_loggingFeedback) {
@@ -437,11 +455,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final brightness = _themeMode == ThemeMode.dark
-        ? Brightness.dark
-        : _themeMode == ThemeMode.light
-            ? Brightness.light
-            : MediaQuery.platformBrightnessOf(context);
+    final brightness = _darkMode ? Brightness.dark : Brightness.light;
+    final pageBackground = _darkMode ? const Color(0xFF091C2D) : _background;
     return Theme(
       data: Theme.of(context).copyWith(
         colorScheme: ColorScheme.fromSeed(
@@ -455,21 +470,19 @@ class _HomeScreenState extends State<HomeScreen> {
               : const Color(0xFF10283D),
         ),
         brightness: brightness,
-        scaffoldBackgroundColor: brightness == Brightness.light
-            ? const Color(0xFFF0FAFF)
-            : const Color(0xFF091C2D),
+        scaffoldBackgroundColor: pageBackground,
       ),
       child: Scaffold(
-        backgroundColor: _background,
+        backgroundColor: pageBackground,
         appBar: _selectedTab == 0
             ? null
             : AppBar(
-                backgroundColor: _background,
+                backgroundColor: pageBackground,
                 elevation: 0,
                 title: Text(
                   _sectionTitle,
                   style: const TextStyle(
-                    color: _ink,
+                    color: _blue,
                     fontWeight: FontWeight.w800,
                   ),
                 ),
@@ -514,9 +527,12 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: _darkMode ? const Color(0xFF10283D) : Colors.white,
           borderRadius: BorderRadius.circular(26),
-          border: Border.all(color: const Color(0xFFDCEFF8)),
+          border: Border.all(
+            color:
+                _darkMode ? const Color(0xFF234A66) : const Color(0xFFDCEFF8),
+          ),
           boxShadow: const [
             BoxShadow(
               color: Color(0x180F7BE6),
@@ -599,7 +615,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     Text(
                       _greeting(),
                       style: const TextStyle(
-                        color: _ink,
+                        color: _blue,
                         fontSize: 22,
                         fontWeight: FontWeight.w800,
                       ),
@@ -923,19 +939,21 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildReminder() {
+    final reminderWindowStatus = _reminderWindowStatus();
+    final countdown = _nextReminderCountdown();
     return _infoCard(
       child: Row(
         children: [
           Icon(
-            _progress >= 1
+            _progress >= 1 && _stopAfterGoal
                 ? Icons.check_circle_outline
                 : Icons.notifications_none,
-            color: _progress >= 1 ? Colors.green : _blue,
+            color: _progress >= 1 && _stopAfterGoal ? Colors.green : _blue,
             size: 28,
           ),
           const SizedBox(width: 12),
           Expanded(
-            child: _progress >= 1
+            child: _progress >= 1 && _stopAfterGoal
                 ? const Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -953,18 +971,27 @@ class _HomeScreenState extends State<HomeScreen> {
                     ],
                   )
                 : _remindersEnabled
-                    ? Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('Next reminder',
-                              style: TextStyle(color: _muted, fontSize: 13)),
-                          Text(
-                            '${_intervalLabel()} from now',
+                    ? reminderWindowStatus == null
+                        ? Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('Next reminder',
+                                  style:
+                                      TextStyle(color: _muted, fontSize: 13)),
+                              Text(
+                                countdown ?? 'No more reminders today',
+                                style: const TextStyle(
+                                    color: _ink, fontWeight: FontWeight.w700),
+                              ),
+                            ],
+                          )
+                        : Text(
+                            reminderWindowStatus,
                             style: const TextStyle(
-                                color: _ink, fontWeight: FontWeight.w700),
-                          ),
-                        ],
-                      )
+                              color: _ink,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          )
                     : const Text('Reminders are off',
                         style: TextStyle(
                             color: _ink, fontWeight: FontWeight.w700)),
@@ -977,6 +1004,61 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
     );
+  }
+
+  String? _reminderWindowStatus() {
+    final now = TimeOfDay.now();
+    final nowMinutes = now.hour * 60 + now.minute;
+    final startMinutes = _reminderStart.hour * 60 + _reminderStart.minute;
+    final endMinutes = _reminderEnd.hour * 60 + _reminderEnd.minute;
+
+    if (nowMinutes < startMinutes) {
+      return 'Reminders start at ${_formatReminderTime(_reminderStart)}';
+    }
+    if (nowMinutes >= endMinutes) {
+      return 'Reminders ended for today';
+    }
+    return null;
+  }
+
+  String? _nextReminderCountdown() {
+    final now = DateTime.now();
+    final nowMinutes = now.hour * 60 + now.minute;
+    final startMinutes = _reminderStart.hour * 60 + _reminderStart.minute;
+    final endMinutes = _reminderEnd.hour * 60 + _reminderEnd.minute;
+    if (nowMinutes < startMinutes || nowMinutes >= endMinutes) return null;
+
+    final start = DateTime(
+      now.year,
+      now.month,
+      now.day,
+      _reminderStart.hour,
+      _reminderStart.minute,
+    );
+    final end = DateTime(
+      now.year,
+      now.month,
+      now.day,
+      _reminderEnd.hour,
+      _reminderEnd.minute,
+    );
+    final interval = Duration(
+      minutes: (_reminderHours * 60).round().clamp(1, 24 * 60),
+    );
+    final elapsed = now.difference(start);
+    final intervalsElapsed = elapsed.inMilliseconds ~/ interval.inMilliseconds;
+    final next = start.add(interval * (intervalsElapsed + 1));
+    if (!next.isBefore(end)) return null;
+
+    final remaining = next.difference(now);
+    final hours = remaining.inHours;
+    final minutes = remaining.inMinutes.remainder(60);
+    final seconds = remaining.inSeconds.remainder(60);
+    return [
+      if (hours > 0) '${hours}h',
+      '${minutes.toString().padLeft(2, '0')}m',
+      '${seconds.toString().padLeft(2, '0')}s',
+    ].join(' ');
   }
 
   Widget _buildStreak() {
@@ -1102,42 +1184,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ],
           ),
-        ),
-        const SizedBox(height: 14),
-        _infoCard(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Icon(Icons.info_outline, color: _muted),
-              const SizedBox(width: 12),
-              const Expanded(
-                child: Text(
-                  'Notifications may require permission from your device settings. '
-                  'Hydro will never schedule reminders outside your active hours.',
-                  style: TextStyle(color: _muted, height: 1.4),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 18),
-        OutlinedButton.icon(
-          onPressed: _remindersEnabled
-              ? () async {
-                  await NotificationService.instance.scheduleSnooze(
-                    sound: _soundEnabled,
-                    vibration: _vibrationEnabled,
-                  );
-                  if (!mounted) return;
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Next reminder snoozed for 30 minutes.'),
-                    ),
-                  );
-                }
-              : null,
-          icon: const Icon(Icons.snooze_outlined),
-          label: const Text('Snooze next reminder · 30 min'),
         ),
       ],
     );
@@ -1827,21 +1873,12 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ]),
         _settingsSection('APPEARANCE', [
-          _settingsChoiceRow('Theme', _themeLabel, Icons.palette_outlined),
           _settingsToggleRow(
-            'Mascot animations',
-            _mascotAnimations,
+            'Dark mode',
+            _darkMode,
             (value) async {
-              setState(() => _mascotAnimations = value);
-              await _savePreference(_mascotAnimationsKey, value);
-            },
-          ),
-          _settingsToggleRow(
-            'Reduce animations',
-            _reduceAnimations,
-            (value) async {
-              setState(() => _reduceAnimations = value);
-              await _savePreference(_reduceAnimationsKey, value);
+              setState(() => _darkMode = value);
+              await _savePreference(_darkModeKey, value);
             },
           ),
         ]),
@@ -1863,25 +1900,10 @@ class _HomeScreenState extends State<HomeScreen> {
             },
           ),
         ]),
-        _settingsSection('DATA', [
-          _settingsRow(
-            'Clear hydration history',
-            'Remove all entries',
-            Icons.delete_outline,
-            _confirmClearHistory,
-          ),
-          _settingsRow(
-            'Reset app data',
-            'Return to onboarding',
-            Icons.restart_alt,
-            _confirmResetData,
-          ),
-          _settingsInfo('Your hydration data is stored on this device.'),
-        ]),
         _settingsSection('ABOUT', [
           _settingsRow(
               'About Hydro', '', Icons.water_drop_outlined, _showAbout),
-          _settingsInfo('Version 1.0.1'),
+          _settingsInfo('Version 1.0.2'),
         ]),
       ],
     );
@@ -1954,47 +1976,6 @@ class _HomeScreenState extends State<HomeScreen> {
       activeColor: _blue,
       onChanged: onChanged,
     );
-  }
-
-  Widget _settingsChoiceRow(String title, String value, IconData icon) {
-    return _settingsRow(title, value, icon, () async {
-      final selected = await showModalBottomSheet<String>(
-        context: context,
-        builder: (context) => SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: ['System', 'Light', 'Dark']
-                .map((theme) => ListTile(
-                      title: Text(theme),
-                      trailing: theme == value
-                          ? const Icon(Icons.check, color: _blue)
-                          : null,
-                      onTap: () => Navigator.pop(context, theme),
-                    ))
-                .toList(),
-          ),
-        ),
-      );
-      if (selected != null && mounted) {
-        final mode = ThemeMode.values.firstWhere(
-          (mode) => mode.name.toLowerCase() == selected.toLowerCase(),
-          orElse: () => ThemeMode.system,
-        );
-        setState(() => _themeMode = mode);
-        await _savePreference(_themeKey, mode.name);
-      }
-    });
-  }
-
-  String get _themeLabel {
-    switch (_themeMode) {
-      case ThemeMode.light:
-        return 'Light';
-      case ThemeMode.dark:
-        return 'Dark';
-      case ThemeMode.system:
-        return 'System';
-    }
   }
 
   Widget _settingsInfo(String text) => Padding(
@@ -2079,54 +2060,11 @@ class _HomeScreenState extends State<HomeScreen> {
     await _savePreference(_unitKey, _unit);
   }
 
-  Future<void> _confirmClearHistory() async {
-    final confirmed = await _confirmDestructive(
-      'Clear hydration history?',
-      'This will permanently remove all saved water entries and cannot be undone.',
-    );
-    if (!confirmed) return;
-    setState(() => _entries = []);
-    await _saveEntries();
-  }
-
   Future<void> _enableReminders() async {
     if (_remindersEnabled) return;
     setState(() => _remindersEnabled = true);
     await _savePreference(_remindersEnabledKey, true);
     await _syncNotifications(requestPermission: true);
-  }
-
-  Future<void> _confirmResetData() async {
-    final confirmed = await _confirmDestructive(
-      'Reset app data?',
-      'This will remove your hydration data and return you to onboarding.',
-    );
-    if (!confirmed || !mounted) return;
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.clear();
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute<void>(builder: (_) => const OnboardingScreen()),
-      (route) => false,
-    );
-  }
-
-  Future<bool> _confirmDestructive(String title, String body) async {
-    return await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: Text(title),
-            content: Text(body),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: const Text('Cancel')),
-              FilledButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  child: const Text('Clear')),
-            ],
-          ),
-        ) ??
-        false;
   }
 
   void _showAbout() {
@@ -2169,7 +2107,7 @@ class _HomeScreenState extends State<HomeScreen> {
     showLicensePage(
       context: context,
       applicationName: 'Hydro',
-      applicationVersion: '1.0.1',
+      applicationVersion: '1.0.2',
       applicationIcon: Image.asset('assets/images/hydro_icon.png', width: 48),
       applicationLegalese:
           'Hydro is built using Flutter and open-source packages.',
@@ -2181,7 +2119,7 @@ class _HomeScreenState extends State<HomeScreen> {
       scheme: 'mailto',
       path: 'pagatpatan.christianjoseph@gmail.com',
       queryParameters: const {
-        'subject': 'Hydro Feedback (v1.0.1)',
+        'subject': 'Hydro Feedback (v1.0.2)',
         'body': 'Describe the issue or suggestion:',
       },
     );
@@ -2204,9 +2142,11 @@ class _HomeScreenState extends State<HomeScreen> {
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: _darkMode ? const Color(0xFF10283D) : Colors.white,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFFE2EEF7)),
+        border: Border.all(
+          color: _darkMode ? const Color(0xFF234A66) : const Color(0xFFE2EEF7),
+        ),
       ),
       child: child,
     );
